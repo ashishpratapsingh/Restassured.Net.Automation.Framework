@@ -1,0 +1,79 @@
+name: REST API Automation Test Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 6 * * *'  # Runs nightly at 06:00 UTC
+  workflow_dispatch:      # Enables manual trigger from GitHub UI
+    inputs:
+      environment:
+        description: 'Target Execution Environment'
+        required: true
+        default: 'Staging'
+        type: choice
+        options:
+          - Dev
+          - Staging
+          - Production
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  run-api-tests:
+    runs-on: ubuntu-latest
+    name: Execute RestAssured.Net Tests
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x' # Match your target framework (.NET 8/9)
+
+      - name: Restore Dependencies
+        run: dotnet restore ApiAutomationFramework.sln
+
+      - name: Build Framework & Tests
+        run: dotnet build ApiAutomationFramework.sln --no-restore --configuration Release
+
+      - name: Run RestAssured.Net Tests
+        env:
+          # Inject sensitive Auth secrets dynamically into the environment
+          AuthOptions__ClientId: ${{ secrets.AUTH_CLIENT_ID }}
+          AuthOptions__ClientSecret: ${{ secrets.AUTH_CLIENT_SECRET }}
+          Environment__BaseUrl: ${{ inputs.environment == 'Production' && 'https://api.prod.example.com' || 'https://reqres.in' }}
+        run: |
+          dotnet test ApiAutomationFramework.sln \
+            --no-build \
+            --configuration Release \
+            --logger "trx;LogFileName=test_results.trx" \
+            --results-directory TestResults
+        continue-on-error: true # Guarantees report publishing step runs even if tests fail
+
+      - name: Upload Extent HTML Report & TRX Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-test-execution-reports
+          path: |
+            TestResults/ExtentReport.html
+            TestResults/*.trx
+          retention-days: 14
+
+      - name: Verify Test Execution Status
+        run: |
+          # Fails the pipeline job if any test actually failed
+          if grep -q 'outcome="Failed"' TestResults/*.trx; then
+            echo "::error::One or more API test cases failed."
+            exit 1
+          else
+            echo "All API test cases passed successfully."
+          fi
