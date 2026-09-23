@@ -24,10 +24,17 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
   run-api-tests:
     runs-on: ubuntu-latest
-    name: Execute RestAssured.Net Tests
+    name: Execute RestAssured.Net Tests & Deploy Report
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Checkout Code
@@ -36,7 +43,7 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x' # Match your target framework (.NET 8/9)
+          dotnet-version: '8.0.x'
 
       - name: Restore Dependencies
         run: dotnet restore Core.sln
@@ -46,9 +53,6 @@ jobs:
 
       - name: Run RestAssured.Net Tests
         env:
-          # Inject sensitive Auth secrets dynamically into the environment
-          # AuthOptions__ClientId: ${{ secrets.AUTH_CLIENT_ID }}
-          # AuthOptions__ClientSecret: ${{ secrets.AUTH_CLIENT_SECRET }}
           Environment__BaseUrl: ${{ inputs.environment == 'Production' && 'https://api.prod.example.com' || 'https://reqres.in' }}
         run: |
           dotnet test Core.sln \
@@ -68,7 +72,36 @@ jobs:
             TestResults/*.trx
           retention-days: 14
 
+      # ==========================================
+      # GITHUB PAGES DEPLOYMENT STEPS
+      # ==========================================
+      - name: Prepare GitHub Pages Assets
+        if: always() && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p public
+          # Locate ExtentReport.html and copy as index.html for direct root navigation
+          find . -name "ExtentReport.html" -exec cp {} public/index.html \;
+
+      - name: Setup Pages
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages Artifact
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'public'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/deploy-pages@v4
+
+      # ==========================================
+      # PIPELINE VERIFICATION STEP
+      # ==========================================
       - name: Verify Test Execution Status
+        if: always()
         run: |
           # Fails the pipeline job if any test actually failed
           if grep -q 'outcome="Failed"' TestResults/*.trx; then
